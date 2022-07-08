@@ -1,0 +1,20 @@
+[package]
+name = "vulkan-raytracer"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+# The Vulkan library doesn't provide any functionality to create and handle windows, as
+# this would be out of scope. In order to open a window, we are going to use the `winit` crate.
+winit = "*"
+# The `vulkano` crate is the main crate that you must use to use Vulkan.
+vulkano = "0.29"
+# Provides the `shader!` macro that is used to generate code for using shaders.
+vulkano-shaders = {version = "*", features = ["shaderc-build-from-source"]}
+# The `vulkano_win` crate is the link between `vulkano` and `winit`. Vulkano doesn't know about winit,
+# and winit doesn't know about vulkano, so import a crate that will provide a link between the two.
+vulkano-win = "*"
+cgmath = "0.18"
+bytemuck = { version = "1.7", features = ["derive", "extern_crate_std", "min_const_generics"] }
