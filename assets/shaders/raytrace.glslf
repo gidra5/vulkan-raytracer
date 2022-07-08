@@ -33,7 +33,7 @@ layout(set = 0, binding = 1) uniform Data {
   uint f;
 
   uint samples;
-  uint gi_reflection_depth;
+  uint depth;
 
   float max_dist;
   float min_dist;
@@ -44,8 +44,8 @@ layout(set = 0, binding = 1) uniform Data {
   float circleOfConfusionRadius;
   float exposure;
   float ambience;
-  float sigma_t;
-  float sigma_f;
+  float scatter_t;
+  float scatter_bias;
 
   vec3 light_pos;
   vec3 light_color;
@@ -1436,7 +1436,7 @@ void main() {
     vec3 indirect_color = vec3(0.);
     ray.throughput = vec3(1.);
 
-    for (int i = 0; i < int(gi_reflection_depth) + 1; ++i) {
+    for (int i = 0; i < int(depth) + 1; ++i) {
       float seed = x + i;
       Hit hitObj = scene(ray);
       Material material = hitObj.material;
@@ -1447,7 +1447,7 @@ void main() {
       vec3 pos = ray.pos + t * ray.dir;
       vec3 dir;
       vec3 col;
-      float scatter_t = -log(random_0t1(uv_seed, x)) * sigma_t;
+      float scatter_t = -log(random_0t1(uv_seed, x)) * scatter_t;
 
       if (t < scatter_t) {
         float _r1 = random_0t1(uv_seed, x);
@@ -1471,7 +1471,7 @@ void main() {
           //   if (cos_angle > 0.) {
           //     float scatter_distance = pow(10., int(a) - 1);
           //     float scatter_t = -log(random_0t1(uv_seed, x)) * scatter_distance;
-          //     if (scatter_t < t && i < int(gi_reflection_depth)) {
+          //     if (scatter_t < t && i < int(depth)) {
           //       t = scatter_t;
           //       dir = d;
           //       pos = ray.pos + t * ray.dir;
@@ -1563,7 +1563,7 @@ void main() {
         // atmospheric scatter
         // if (incoming > 0.) {
           if (3. * _r1 < 1.) {
-            dir = normalize(sample_sphere(random_0t1_2(uv_seed, x)) + ray.dir * sigma_f);
+            dir = normalize(sample_sphere(random_0t1_2(uv_seed, x)) + ray.dir * scatter_bias);
           } else 
           if (3. * _r1 < 2.) 
           {

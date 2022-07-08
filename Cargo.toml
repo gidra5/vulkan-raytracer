@@ -18,3 +18,4 @@ vulkano-shaders = {version = "*", features = ["shaderc-build-from-source"]}
 vulkano-win = "*"
 cgmath = "0.18"
 bytemuck = { version = "1.7", features = ["derive", "extern_crate_std", "min_const_generics"] }
+rand = "0.8.4"

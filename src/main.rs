@@ -1,4 +1,4 @@
-// Copyright (c) 2016 The vulkano developers
+// Copyright (c) 2021 The vulkano developers
 // Licensed under the Apache License, Version 2.0
 // <LICENSE-APACHE or
 // https://www.apache.org/licenses/LICENSE-2.0> or the MIT
@@ -7,411 +7,121 @@
 // notice may not be copied, modified, or distributed except
 // according to those terms.
 
-use bytemuck::{Pod, Zeroable};
-use std::sync::Arc;
-use vulkano::{
-    buffer::{BufferUsage, CpuAccessibleBuffer, TypedBufferAccess},
-    command_buffer::{AutoCommandBufferBuilder, CommandBufferUsage, SubpassContents},
-    device::{
-        physical::{PhysicalDevice, PhysicalDeviceType},
-        Device, DeviceCreateInfo, DeviceExtensions, QueueCreateInfo,
-    },
-    format::Format,
-    image::{view::ImageView, AttachmentImage, ImageAccess, ImageUsage, SwapchainImage},
-    impl_vertex,
-    instance::{Instance, InstanceCreateInfo},
-    pipeline::{
-        graphics::{
-            depth_stencil::DepthStencilState,
-            input_assembly::InputAssemblyState,
-            vertex_input::BuffersDefinition,
-            viewport::{Viewport, ViewportState},
-        },
-        GraphicsPipeline,
-    },
-    render_pass::{Framebuffer, FramebufferCreateInfo, RenderPass, Subpass},
-    shader::ShaderModule,
-    swapchain::{
-        acquire_next_image, AcquireError, Swapchain, SwapchainCreateInfo, SwapchainCreationError,
-    },
-    sync::{self, FlushError, GpuFuture},
+use crate::{
+    app::FractalApp,
+    renderer::{image_over_frame_renderpass, RenderOptions, Renderer},
 };
-use vulkano_win::VkSurfaceBuild;
+use vulkano::sync::GpuFuture;
 use winit::{
     event::{Event, WindowEvent},
     event_loop::{ControlFlow, EventLoop},
-    window::{Window, WindowBuilder},
+    platform::run_return::EventLoopExtRunReturn,
 };
 
-#[repr(C)]
-#[derive(Clone, Copy, Debug, Default, Zeroable, Pod)]
-struct Vertex {
-    pos: [f32; 2],
-}
-impl_vertex!(Vertex, pos);
+mod app;
+mod fractal_compute_pipeline;
+mod pixels_draw_pipeline;
+mod place_over_frame;
+mod renderer;
 
+/// This is an example demonstrating an application with some more non-trivial functionality.
+/// It should get you more up to speed with how you can use Vulkano.
+/// It contains
+/// - Compute pipeline to calculate Mandelbrot and Julia fractals writing them to an image target
+/// - Graphics pipeline to draw the fractal image over a quad that covers the whole screen
+/// - Renderpass rendering that image over swapchain image
+/// - An organized Renderer with functionality good enough to copy to other projects
+/// - Simple FractalApp to handle runtime state
+/// - Simple Input system to interact with the application
 fn main() {
-    // The start of this example is exactly the same as `triangle`. You should read the
-    // `triangle` example if you haven't done so yet.
-
-    let required_extensions = vulkano_win::required_extensions();
-    let instance = Instance::new(InstanceCreateInfo {
-        enabled_extensions: required_extensions,
-        ..Default::default()
-    })
-    .unwrap();
-
-    let event_loop = EventLoop::new();
-    let surface = WindowBuilder::new()
-        .build_vk_surface(&event_loop, instance.clone())
-        .unwrap();
-
-    let device_extensions = DeviceExtensions {
-        khr_swapchain: true,
-        ..DeviceExtensions::none()
-    };
-    let (physical_device, queue_family) = PhysicalDevice::enumerate(&instance)
-        .filter(|&p| p.supported_extensions().is_superset_of(&device_extensions))
-        .filter_map(|p| {
-            p.queue_families()
-                .find(|&q| q.supports_graphics() && q.supports_surface(&surface).unwrap_or(false))
-                .map(|q| (p, q))
-        })
-        .min_by_key(|(p, _)| match p.properties().device_type {
-            PhysicalDeviceType::DiscreteGpu => 0,
-            PhysicalDeviceType::IntegratedGpu => 1,
-            PhysicalDeviceType::VirtualGpu => 2,
-            PhysicalDeviceType::Cpu => 3,
-            PhysicalDeviceType::Other => 4,
-        })
-        .unwrap();
-
-    println!(
-        "Using device: {} (type: {:?})",
-        physical_device.properties().device_name,
-        physical_device.properties().device_type,
+    // Create event loop
+    let mut event_loop = EventLoop::new();
+    // Create a renderer with a window & render options
+    let mut renderer = Renderer::new(
+        &event_loop,
+        RenderOptions {
+            title: "Fractal",
+            ..RenderOptions::default()
+        },
     );
+    // Add our render target image onto which we'll be rendering our fractals.
+    // View size None here means renderer will keep resizing the image on resize
+    let render_target_id = 0;
+    renderer.add_interim_image_view(render_target_id, None, renderer.image_format());
 
-    let (device, mut queues) = Device::new(
-        physical_device,
-        DeviceCreateInfo {
-            enabled_extensions: physical_device
-                .required_extensions()
-                .union(&device_extensions),
-            queue_create_infos: vec![QueueCreateInfo::family(queue_family)],
-            ..Default::default()
-        },
-    )
-    .unwrap();
+    // Create app to hold the logic of our fractal explorer
+    let mut app = FractalApp::new(&renderer);
+    app.print_guide();
 
-    let queue = queues.next().unwrap();
-
-    let (mut swapchain, images) = {
-        let surface_capabilities = physical_device
-            .surface_capabilities(&surface, Default::default())
-            .unwrap();
-        let image_format = Some(
-            physical_device
-                .surface_formats(&surface, Default::default())
-                .unwrap()[0]
-                .0,
-        );
-
-        Swapchain::new(
-            device.clone(),
-            surface.clone(),
-            SwapchainCreateInfo {
-                min_image_count: surface_capabilities.min_image_count,
-                image_format,
-                image_extent: surface.window().inner_size().into(),
-                image_usage: ImageUsage::color_attachment(),
-                composite_alpha: surface_capabilities
-                    .supported_composite_alpha
-                    .iter()
-                    .next()
-                    .unwrap(),
-                ..Default::default()
-            },
-        )
-        .unwrap()
-    };
-    let vertices = [
-        Vertex { pos: [-1., -1.] },
-        Vertex { pos: [-1., 1.] },
-        Vertex { pos: [1., -1.] },
-        Vertex { pos: [1., 1.] },
-    ];
-    let indices: [u16; 6] = [0, 1, 3, 0, 2, 3];
-
-    let vertex_buffer =
-        CpuAccessibleBuffer::from_iter(device.clone(), BufferUsage::all(), false, vertices)
-            .unwrap();
-    let index_buffer =
-        CpuAccessibleBuffer::from_iter(device.clone(), BufferUsage::all(), false, indices).unwrap();
-
-    // let uniform_buffer = CpuBufferPool::<vs::ty::Data>::new(device.clone(), BufferUsage::all());
-
-    let vs = vs::load(device.clone()).unwrap();
-    let fs = fs::load(device.clone()).unwrap();
-
-    let render_pass = vulkano::single_pass_renderpass!(device.clone(),
-        attachments: {
-            color: {
-                load: Clear,
-                store: Store,
-                format: swapchain.image_format(),
-                samples: 1,
-            },
-            depth: {
-                load: Clear,
-                store: DontCare,
-                format: Format::D16_UNORM,
-                samples: 1,
-            }
-        },
-        pass: {
-            color: [color],
-            depth_stencil: {depth}
+    // Basic loop for our runtime
+    // 1. Handle events
+    // 2. Update state based on events
+    // 3. Compute & Render
+    // 4. Reset input state
+    // 5. Update time & title
+    loop {
+        if !handle_events(&mut event_loop, &mut renderer, &mut app) {
+            break;
         }
-    )
-    .unwrap();
+        app.update_state_after_inputs(&mut renderer);
+        compute_then_render(&mut renderer, &mut app, render_target_id);
+        app.reset_input_state();
+        app.update_time();
+        renderer.window().set_title(&format!(
+            "{} fps: {:.2} dt: {:.2}, Max Iterations: {}",
+            if app.is_julia { "Julia" } else { "Mandelbrot" },
+            app.avg_fps(),
+            app.dt(),
+            app.max_iters
+        ));
+    }
+}
 
-    let (mut pipeline, mut framebuffers) =
-        window_size_dependent_setup(device.clone(), &vs, &fs, &images, render_pass.clone());
-    let mut recreate_swapchain = false;
-
-    let mut previous_frame_end = Some(sync::now(device.clone()).boxed());
-
-    event_loop.run(move |event, _, control_flow| {
-        match event {
-            Event::WindowEvent {
-                event: WindowEvent::CloseRequested,
-                ..
-            } => {
-                *control_flow = ControlFlow::Exit;
-            }
-            Event::WindowEvent {
-                event: WindowEvent::Resized(_),
-                ..
-            } => {
-                recreate_swapchain = true;
-            }
-            Event::RedrawEventsCleared => {
-                let dimensions = surface.window().inner_size();
-                if dimensions.width == 0 || dimensions.height == 0 {
-                    return;
+/// Handle events and return `bool` if we should quit
+fn handle_events(
+    event_loop: &mut EventLoop<()>,
+    renderer: &mut Renderer,
+    app: &mut FractalApp,
+) -> bool {
+    let mut is_running = true;
+    event_loop.run_return(|event, _, control_flow| {
+        *control_flow = ControlFlow::Wait;
+        match &event {
+            Event::WindowEvent { event, .. } => match event {
+                WindowEvent::CloseRequested => is_running = false,
+                WindowEvent::Resized(..) | WindowEvent::ScaleFactorChanged { .. } => {
+                    renderer.resize()
                 }
-
-                previous_frame_end.as_mut().unwrap().cleanup_finished();
-
-                if recreate_swapchain {
-                    let (new_swapchain, new_images) =
-                        match swapchain.recreate(SwapchainCreateInfo {
-                            image_extent: dimensions.into(),
-                            ..swapchain.create_info()
-                        }) {
-                            Ok(r) => r,
-                            Err(SwapchainCreationError::ImageExtentNotSupported { .. }) => return,
-                            Err(e) => panic!("Failed to recreate swapchain: {:?}", e),
-                        };
-
-                    swapchain = new_swapchain;
-                    let (new_pipeline, new_framebuffers) = window_size_dependent_setup(
-                        device.clone(),
-                        &vs,
-                        &fs,
-                        &new_images,
-                        render_pass.clone(),
-                    );
-                    pipeline = new_pipeline;
-                    framebuffers = new_framebuffers;
-                    recreate_swapchain = false;
-                }
-
-                // let uniform_buffer_subbuffer = {
-                //     let elapsed = rotation_start.elapsed();
-                //     let rotation =
-                //         elapsed.as_secs() as f64 + elapsed.subsec_nanos() as f64 / 1_000_000_000.0;
-                //     let rotation = Matrix3::from_angle_y(Rad(rotation as f32));
-
-                //     // note: this teapot was meant for OpenGL where the origin is at the lower left
-                //     //       instead the origin is at the upper left in Vulkan, so we reverse the Y axis
-                //     let aspect_ratio =
-                //         swapchain.image_extent()[0] as f32 / swapchain.image_extent()[1] as f32;
-                //     let proj = cgmath::perspective(
-                //         Rad(std::f32::consts::FRAC_PI_2),
-                //         aspect_ratio,
-                //         0.01,
-                //         100.0,
-                //     );
-                //     let view = Matrix4::look_at_rh(
-                //         Point3::new(0.3, 0.3, 1.0),
-                //         Point3::new(0.0, 0.0, 0.0),
-                //         Vector3::new(0.0, -1.0, 0.0),
-                //     );
-                //     let scale = Matrix4::from_scale(0.01);
-
-                //     let uniform_data = vs::ty::Data {
-                //         world: Matrix4::from(rotation).into(),
-                //         view: (view * scale).into(),
-                //         proj: proj.into(),
-                //     };
-
-                //     uniform_buffer.next(uniform_data).unwrap()
-                // };
-
-                // let layout = pipeline.layout().set_layouts().get(0).unwrap();
-                // let set = PersistentDescriptorSet::new(
-                //     layout.clone(),
-                //     [WriteDescriptorSet::buffer(0, uniform_buffer_subbuffer)],
-                // )
-                // .unwrap();
-
-                let (image_num, suboptimal, acquire_future) =
-                    match acquire_next_image(swapchain.clone(), None) {
-                        Ok(r) => r,
-                        Err(AcquireError::OutOfDate) => {
-                            recreate_swapchain = true;
-                            return;
-                        }
-                        Err(e) => panic!("Failed to acquire next image: {:?}", e),
-                    };
-
-                if suboptimal {
-                    recreate_swapchain = true;
-                }
-
-                let mut builder = AutoCommandBufferBuilder::primary(
-                    device.clone(),
-                    queue.family(),
-                    CommandBufferUsage::OneTimeSubmit,
-                )
-                .unwrap();
-                builder
-                    .begin_render_pass(
-                        framebuffers[image_num].clone(),
-                        SubpassContents::Inline,
-                        vec![[0.0, 0.0, 1.0, 1.0].into(), 1f32.into()],
-                    )
-                    .unwrap()
-                    .bind_pipeline_graphics(pipeline.clone())
-                    // .bind_descriptor_sets(
-                    //     PipelineBindPoint::Graphics,
-                    //     pipeline.layout().clone(),
-                    //     0,
-                    //     set.clone(),
-                    // )
-                    // .bind_vertex_buffers(0, (vertex_buffer.clone(), normals_buffer.clone()))
-                    .bind_vertex_buffers(0, vertex_buffer.clone())
-                    .bind_index_buffer(index_buffer.clone())
-                    .draw_indexed(index_buffer.len() as u32, 1, 0, 0, 0)
-                    // .draw(vertex_buffer.len() as u32, 1, 0, 0)
-                    .unwrap()
-                    .end_render_pass()
-                    .unwrap();
-                let command_buffer = builder.build().unwrap();
-
-                let future = previous_frame_end
-                    .take()
-                    .unwrap()
-                    .join(acquire_future)
-                    .then_execute(queue.clone(), command_buffer)
-                    .unwrap()
-                    .then_swapchain_present(queue.clone(), swapchain.clone(), image_num)
-                    .then_signal_fence_and_flush();
-
-                match future {
-                    Ok(future) => {
-                        previous_frame_end = Some(future.boxed());
-                    }
-                    Err(FlushError::OutOfDate) => {
-                        recreate_swapchain = true;
-                        previous_frame_end = Some(sync::now(device.clone()).boxed());
-                    }
-                    Err(e) => {
-                        println!("Failed to flush future: {:?}", e);
-                        previous_frame_end = Some(sync::now(device.clone()).boxed());
-                    }
-                }
-            }
+                _ => (),
+            },
+            Event::MainEventsCleared => *control_flow = ControlFlow::Exit,
             _ => (),
         }
+        // Pass event for app to handle our inputs
+        app.handle_input(renderer.window_size(), &event);
     });
+    is_running && app.is_running()
 }
 
-/// This method is called once during initialization, then again whenever the window is resized
-fn window_size_dependent_setup(
-    device: Arc<Device>,
-    vs: &ShaderModule,
-    fs: &ShaderModule,
-    images: &[Arc<SwapchainImage<Window>>],
-    render_pass: Arc<RenderPass>,
-) -> (Arc<GraphicsPipeline>, Vec<Arc<Framebuffer>>) {
-    let dimensions = images[0].dimensions().width_height();
-
-    let depth_buffer = ImageView::new_default(
-        AttachmentImage::transient(device.clone(), dimensions, Format::D16_UNORM).unwrap(),
-    )
-    .unwrap();
-
-    let framebuffers = images
-        .iter()
-        .map(|image| {
-            let view = ImageView::new_default(image.clone()).unwrap();
-            Framebuffer::new(
-                render_pass.clone(),
-                FramebufferCreateInfo {
-                    attachments: vec![view, depth_buffer.clone()],
-                    ..Default::default()
-                },
-            )
-            .unwrap()
-        })
-        .collect::<Vec<_>>();
-
-    // In the triangle example we use a dynamic viewport, as its a simple example.
-    // However in the teapot example, we recreate the pipelines with a hardcoded viewport instead.
-    // This allows the driver to optimize things, at the cost of slower window resizes.
-    // https://computergraphics.stackexchange.com/questions/5742/vulkan-best-way-of-updating-pipeline-viewport
-    let pipeline = GraphicsPipeline::start()
-        .vertex_input_state(
-            BuffersDefinition::new().vertex::<Vertex>(), // .vertex::<Normal>(),
-        )
-        .vertex_shader(vs.entry_point("main").unwrap(), ())
-        .input_assembly_state(InputAssemblyState::new())
-        .viewport_state(ViewportState::viewport_fixed_scissor_irrelevant([
-            Viewport {
-                origin: [0.0, 0.0],
-                dimensions: [dimensions[0] as f32, dimensions[1] as f32],
-                depth_range: 0.0..1.0,
-            },
-        ]))
-        .fragment_shader(fs.entry_point("main").unwrap(), ())
-        .depth_stencil_state(DepthStencilState::simple_depth_test())
-        .render_pass(Subpass::from(render_pass.clone(), 0).unwrap())
-        .build(device.clone())
-        .unwrap();
-
-    (pipeline, framebuffers)
-}
-
-mod vs {
-    vulkano_shaders::shader! {
-        ty: "vertex",
-        path: "./assets/shaders/rect.glslv",
-        // path: "./assets/shaders/teapot.glslv",
-        // types_meta: {
-        //     use bytemuck::{Pod, Zeroable};
-
-        //     #[derive(Clone, Copy, Zeroable, Pod)]
-        // },
-    }
-}
-
-mod fs {
-    vulkano_shaders::shader! {
-        ty: "fragment",
-        path: "./assets/shaders/rect.glslf"
-        // path: "./assets/shaders/teapot.glslf"
-    }
+/// Orchestrate rendering here
+fn compute_then_render(renderer: &mut Renderer, app: &mut FractalApp, target_image_id: usize) {
+    // Start frame
+    let before_pipeline_future = match renderer.start_frame() {
+        Err(e) => {
+            println!("{}", e.to_string());
+            return;
+        }
+        Ok(future) => future,
+    };
+    // Retrieve target image
+    let target_image = renderer.get_interim_image_view(target_image_id);
+    // Compute our fractal (writes to target image). Join future with `before_pipeline_future`.
+    let after_compute = app
+        .compute(target_image.clone())
+        .join(before_pipeline_future);
+    // Render target image over frame. Input previous future.
+    let after_renderpass_future =
+        image_over_frame_renderpass(renderer, after_compute, target_image);
+    // Finish frame (which presents the view). Input last future
+    renderer.finish_frame(after_renderpass_future);
 }
