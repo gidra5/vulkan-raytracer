@@ -138,19 +138,16 @@ fn main() {
     let vertices = [
         Vertex { pos: [-1., -1.] },
         Vertex { pos: [-1., 1.] },
-        Vertex { pos: [1., 1.] },
-        Vertex { pos: [-1., -1.] },
         Vertex { pos: [1., -1.] },
         Vertex { pos: [1., 1.] },
     ];
+    let indices: [u16; 6] = [0, 1, 3, 0, 2, 3];
 
     let vertex_buffer =
         CpuAccessibleBuffer::from_iter(device.clone(), BufferUsage::all(), false, vertices)
             .unwrap();
-    // let normals_buffer =
-    //     CpuAccessibleBuffer::from_iter(device.clone(), BufferUsage::all(), false, NORMALS).unwrap();
-    // let index_buffer =
-    //     CpuAccessibleBuffer::from_iter(device.clone(), BufferUsage::all(), false, INDICES).unwrap();
+    let index_buffer =
+        CpuAccessibleBuffer::from_iter(device.clone(), BufferUsage::all(), false, indices).unwrap();
 
     // let uniform_buffer = CpuBufferPool::<vs::ty::Data>::new(device.clone(), BufferUsage::all());
 
@@ -306,9 +303,9 @@ fn main() {
                     // )
                     // .bind_vertex_buffers(0, (vertex_buffer.clone(), normals_buffer.clone()))
                     .bind_vertex_buffers(0, vertex_buffer.clone())
-                    // .bind_index_buffer(index_buffer.clone())
-                    // .draw_indexed(index_buffer.len() as u32, 1, 0, 0, 0)
-                    .draw(vertex_buffer.len() as u32, 1, 0, 0)
+                    .bind_index_buffer(index_buffer.clone())
+                    .draw_indexed(index_buffer.len() as u32, 1, 0, 0, 0)
+                    // .draw(vertex_buffer.len() as u32, 1, 0, 0)
                     .unwrap()
                     .end_render_pass()
                     .unwrap();
@@ -418,81 +415,3 @@ mod fs {
         // path: "./assets/shaders/teapot.glslf"
     }
 }
-
-/*
-
-    // We now create a buffer that will store the shape of our triangle.
-    // We use #[repr(C)] here to force rustc to not do anything funky with our data, although for this
-    // particular example, it doesn't actually change the in-memory representation.
-    #[repr(C)]
-    #[derive(Clone, Copy, Debug, Default, Zeroable, Pod)]
-    struct Vertex {
-        pos: [f32; 2],
-    }
-    impl_vertex!(Vertex, pos);
-
-    let vertices = [
-        Vertex { pos: [-1., -1.] },
-        Vertex { pos: [-1., 1.] },
-        Vertex { pos: [1., 1.] },
-        Vertex { pos: [-1., -1.] },
-        Vertex { pos: [1., -1.] },
-        Vertex { pos: [1., 1.] },
-    ];
-    let vertex_buffer =
-        CpuAccessibleBuffer::from_iter(device.clone(), BufferUsage::all(), false, vertices)
-            .unwrap();
-    let uniform_buffer = CpuBufferPool::<fs::ty::Data>::new(device.clone(), BufferUsage::all());
-
-    // The next step is to create the shaders.
-    //
-    // The raw shader creation API provided by the vulkano library is unsafe, for various reasons.
-    //
-    // An overview of what the `shader!` macro generates can be found in the
-    // `vulkano-shaders` crate docs. You can view them at https://docs.rs/vulkano-shaders/
-    //
-    // TODO: explain this in details
-    mod vs {
-        vulkano_shaders::shader! {
-            ty: "vertex",
-            src: "
-                #version 450
-
-                layout(location = 0) in vec2 pos;
-                layout(location = 0) out vec2 _pos;
-
-                void main() {
-                    gl_Position = vec4(pos, 0.0, 1.0);
-                    _pos = (pos + 1) / 2;
-                }
-            "
-        }
-    }
-
-    mod fs {
-        vulkano_shaders::shader! {
-            ty: "fragment",
-            types_meta: {
-                use bytemuck::{Pod, Zeroable};
-                #[derive(Clone, Copy, Zeroable, Pod)]
-            },
-            src: "
-                #version 450
-
-                layout(location = 0) in vec2 _pos;
-                layout(location = 0) out vec4 f_color;
-
-                layout(set = 0, binding = 0) uniform Data {
-                    mat4 world;
-                    mat4 view;
-                    mat4 proj;
-                } uniforms;
-
-
-                void main() {
-                    f_color = vec4(_pos, 0.0, 1.0);
-                }
-            "
-        }
-    }
-*/
