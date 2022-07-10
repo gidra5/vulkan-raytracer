@@ -1,0 +1,91 @@
+
+//primitives are "centered" at (0, 0, 0)
+float box(vec3 p, vec3 half_sides) {
+  vec3 q = abs(p) - half_sides;
+  return length(max(q, 0.0)) + min(max(q.x,max(q.y,q.z)),0.0);
+}
+
+float sphere(vec3 p, float r) {
+  return length(p) - r;
+}
+
+float sphere(Ray ray, float r) {
+  float t = dot(ray.dir, ray.pos);
+  float r_min = r + min_dist;
+  float d = t + sqrt(r_min * r_min - dot(ray.pos, ray.pos) + t * t);
+  // if (d < 0.) return sphere(p, r);
+  // else        return d;
+  if (t < 0.) return max_dist; 
+  else return d;
+}
+
+float plane(vec3 p, vec3 norm) {
+  return abs(dot(p, norm)) - min_dist;
+}
+
+float plane(Ray ray, vec3 norm) {
+  float d1 = -dot(ray.pos, norm);
+  float d2 = d1 + min_dist;
+  float d3 = dot(ray.dir, norm);
+  if (d1 * d3 < 0.) return max_dist;
+  else              return d2 / d3;
+}
+
+float cylinder(vec3 p, vec3 dir_c, float r) {
+  return length(cross(p, dir_c)) - r;
+}
+
+float triangle(vec3 p, vec3 a, vec3 b, vec3 c) {
+  vec3 ba = normalize(b - a); vec3 pa = p - a;
+  vec3 cb = normalize(c - b); vec3 pb = p - b;
+  vec3 ac = normalize(a - c); vec3 pc = p - c;
+  mat3 t = mat3(
+    cross(pc, ac),
+    cross(pb, cb),
+    cross(pa, ba)
+  );
+
+  vec3 d = transpose(t) * cross(ac, ba);
+
+  ivec3 n = ivec3(lessThan(d, vec3(0.)));
+  ivec3 not_n = 1 - n;
+  int f = int(dot(n, n));
+  if (f == 3) return abs(dot(t[2], ac)) - min_dist; // directly above triangle
+
+  mat3 vecs = mat3(pa, pb, pc);
+  int index = int(dot(f == 2 ? not_n : n, ivec3(0, 1, 2)));
+  return length(f == 2 ? t[index] : vecs[index]); 
+}
+
+//can_* show if primitive could be intersected
+bool can_plane(Ray ray, vec3 norm) {
+  return dot(ray.dir, norm) * dot(ray.pos, norm) < 0.;
+}
+
+bool can_cylinder(Ray ray, vec3 dir_c, float r) {
+  return abs(dot(ray.dir, cross(ray.pos, dir_c))) < r;
+}
+
+bool can_sphere(Ray ray, float r) {
+  return length(cross(ray.pos, ray.dir)) < r;
+}
+
+bool can_triangle(Ray ray, vec3 a, vec3 b, vec3 c) {
+  mat3 A = mat3(
+    b - a,
+    c - b,
+    a - c
+  );
+  vec3 d = vec3(
+    dot(b, b) - dot(a, a),
+    dot(c, c) - dot(b, b),
+    dot(a, a) - dot(c, c)
+  );
+  vec3 center = 2 * inverse(transpose(A)) * d;
+
+  // return can_sphere(dir, p - center, length(a - center)) && can_plane(dir, p, normalize(cross(A[0], A[2])));
+  // return can_sphere(dir, p - center, length(a - center));
+  return can_plane(ray, normalize(cross(A[0], A[2])));
+  // return can_cylinder(dir, p - point_ba, , max(dot(A[0], A[2]), max(dot(A[0], A[1]), dot(A[0], A[0]))) / (2. * length(A[0])));
+  // return true;
+}

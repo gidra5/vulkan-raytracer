@@ -1,8 +1,13 @@
 #version 460
 
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+// Image to which we'll write our fractal
+layout(set = 0, binding = 0, rgba8) uniform image2D img;
+
 const float PHI     = 1.61803398874989484820459; // Golden Ratio   
 const float PHI_2   = 1.32471795724474602596090; // Golden Ratio 2
-const float PHI_3   = 1.22074408460575947536168; // Golden Ratio 3
+const float PHI_3   = 1.22074408460575947536168; // Golden Ratio 3 
 const float PHI_4   = 1.16730397826141868425604; // Golden Ratio 4
 const float SRT     = 1.41421356237309504880169; // Square Root of Two
 const float PI      = 3.14159265358979323846264;
@@ -13,16 +18,11 @@ const uint TYPE_DIFFUSE = 0x00000001u;
 const uint TYPE_REFRACTIVE = 0x00000002u;
 const uint TYPE_SUBSUFRACE = 0x00000004u;
 
-layout(location = 0) in vec3 ray_dir;
-
-layout(location = 1) out vec4 frag_color;
-
-layout(binding = 0) uniform samplerCube skybox;
+// layout(binding = 1) uniform samplerCube skybox;
 
 layout(set = 0, binding = 1) uniform Data {
-  mat4 u_proj;
+  // mat4 u_proj;
   mat4 u_view;
-  vec2 u_resolution;
   float t;
   float dt;
   uint a;
@@ -1417,10 +1417,11 @@ float sq(float v) {
 
 
 void main() {
+  vec2 u_resolution = vec2(imageSize(img));
   vec3 _frag_color = vec3(0.);
   for (int x = 0; x < int(samples); ++x) {
-    vec2 subpixel = random_0t1_2(vec_to_float(gl_FragCoord.xy), x);
-    vec2 uv = (2. * (gl_FragCoord.xy + subpixel) - u_resolution) / u_resolution.x;
+    vec2 subpixel = random_0t1_2(vec_to_float(gl_GlobalInvocationID.xy), x);
+    vec2 uv = (2. * (gl_GlobalInvocationID.xy + subpixel) - u_resolution) / u_resolution.x;
     vec3 rayDirection = normalize(paniniRay(uv));
     // vec3 rayDirection = normalize(pinholeRay(uv));
     float uv_seed = vec_to_float(uv);
@@ -1600,5 +1601,6 @@ void main() {
   _frag_color /= samples;
   _frag_color *= exposure;
   _frag_color = ACESFilm(_frag_color);
-  frag_color = vec4(LinearToSRGB(_frag_color), 1.);
+  vec4 curr_color = vec4(imageLoad(img, ivec2(gl_GlobalInvocationID.xy)));
+  imageStore(img, ivec2(gl_GlobalInvocationID.xy), vec4(LinearToSRGB(_frag_color), 1.));
 }

@@ -68,11 +68,10 @@ fn main() {
         app.reset_input_state();
         app.update_time();
         renderer.window().set_title(&format!(
-            "{} fps: {:.2} dt: {:.2}, Max Iterations: {}",
-            if app.is_julia { "Julia" } else { "Mandelbrot" },
+            "{} fps: {:.2} dt: {:.2}",
+            "Raytracing",
             app.avg_fps(),
             app.dt(),
-            app.max_iters
         ));
     }
 }

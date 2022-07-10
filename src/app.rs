@@ -8,65 +8,85 @@
 // according to those terms.
 
 use crate::{
+    fractal_compute_pipeline::cs,
     fractal_compute_pipeline::FractalComputePipeline,
     renderer::{InterimImageView, RenderOptions, Renderer},
 };
+use cgmath::Matrix3;
 use cgmath::Vector2;
+use cgmath::Vector3;
+use core::f64::consts::PI;
 use std::time::Instant;
 use vulkano::sync::GpuFuture;
 use winit::{
     dpi::PhysicalPosition,
-    event::{
-        ElementState, Event, KeyboardInput, MouseButton, MouseScrollDelta, VirtualKeyCode,
-        WindowEvent,
-    },
+    event::{ElementState, Event, KeyboardInput, MouseScrollDelta, VirtualKeyCode, WindowEvent},
 };
 
-const MAX_ITERS_INIT: u32 = 200;
-const MOVE_SPEED: f32 = 0.5;
+const SENSATIVITY: f32 = 0.002;
+const SPEED: f32 = 1.;
 
 /// App for exploring Julia and Mandelbrot fractals
 pub struct FractalApp {
     /// Pipeline that computes Mandelbrot & Julia fractals and writes them to an image
     fractal_pipeline: FractalComputePipeline,
-    /// Toggle that flips between julia and mandelbrot
-    pub is_julia: bool,
-    /// Togglet thats stops the movement on Julia
-    is_c_paused: bool,
-    /// C is a constant input to Julia escape time algorithm (mouse position).
-    c: Vector2<f32>,
-    /// Our zoom level
-    scale: Vector2<f32>,
-    /// Our translation on the complex plane
-    translation: Vector2<f32>,
-    /// How far should the escape time algorithm run (higher = less performance, more accurate image)
-    pub max_iters: u32,
-    /// Time tracking, useful for frame independent movement
     time: Instant,
-    dt: f32,
     dt_sum: f32,
     frame_count: f32,
     avg_fps: f32,
     /// Input state to handle mouse positions, continuous movement etc.
     input_state: InputState,
+    orientation: quaternion::Quaternion<f32>,
+    shader_data: cs::ty::Data,
 }
 
 impl FractalApp {
     pub fn new(renderer: &Renderer) -> FractalApp {
         FractalApp {
             fractal_pipeline: FractalComputePipeline::new(renderer.queue()),
-            is_julia: false,
-            is_c_paused: false,
-            c: Vector2::new(0.0, 0.0),
-            scale: Vector2::new(4.0, 4.0),
-            translation: Vector2::new(0.0, 0.0),
-            max_iters: MAX_ITERS_INIT,
             time: Instant::now(),
-            dt: 0.0,
-            dt_sum: 0.0,
             frame_count: 0.0,
             avg_fps: 0.0,
+            dt_sum: 0.0,
             input_state: InputState::new(),
+            orientation: quaternion::id::<f32>(),
+            shader_data: cs::ty::Data {
+                u_view: [
+                    [1., 0., 0., 0.],
+                    [0., 1., 0., 0.],
+                    [0., 0., 1., 0.],
+                    [0., 0., -6., 1.],
+                ],
+                t: 0.,
+                dt: 0.,
+                a: 0,
+                b: 0,
+                c: 0,
+                d: 0,
+                e: 0,
+                f: 0,
+                samples: 1,
+                depth: 3,
+                max_dist: 1e+6,
+                min_dist: 1e-4,
+                cameraFovAngle: (PI * 2. / 3.) as f32,
+                paniniDistance: 1.,
+                lensFocusDistance: 4.,
+                circleOfConfusionRadius: 0.,
+                exposure: 1.,
+                ambience: 0.,
+                scatter_t: 100.,
+                scatter_bias: 1.,
+                light_pos: [2., 6.89, 1.],
+                light_color: [0xff as f32 / 255., 0xff as f32 / 255., 0xff as f32 / 255.],
+                sphere_center: [-1., 0., 0.],
+                plane_center: [0., -1., 0.],
+                cylinder_center: [1., 0., 4.],
+                _dummy0: [0; 4],
+                _dummy1: [0; 4],
+                _dummy2: [0; 4],
+                _dummy3: [0; 4],
+            },
         }
     }
 
@@ -88,14 +108,8 @@ Usage:
 
     /// Run our compute pipeline and return a future of when the compute is finished
     pub fn compute(&mut self, image_target: InterimImageView) -> Box<dyn GpuFuture> {
-        self.fractal_pipeline.compute(
-            image_target,
-            self.c,
-            self.scale,
-            self.translation,
-            self.max_iters,
-            self.is_julia,
-        )
+        self.fractal_pipeline
+            .compute(image_target, self.shader_data)
     }
 
     /// Should the app quit? (on esc)
@@ -110,7 +124,7 @@ Usage:
 
     /// Delta time in milliseconds
     pub fn dt(&self) -> f32 {
-        self.dt * 1000.0
+        self.shader_data.dt * 1000.0
     }
 
     /// Update times and dt at the end of each frame
@@ -121,8 +135,9 @@ Usage:
             self.frame_count = 0.0;
             self.dt_sum = 0.0;
         }
-        self.dt = self.time.elapsed().as_secs_f32();
-        self.dt_sum += self.dt;
+        self.shader_data.dt = self.time.elapsed().as_secs_f32();
+        self.shader_data.t += self.shader_data.dt;
+        self.dt_sum += self.shader_data.dt;
         self.frame_count += 1.0;
         self.time = Instant::now();
     }
@@ -130,60 +145,51 @@ Usage:
     /// Updates app state based on input state
     pub fn update_state_after_inputs(&mut self, renderer: &mut Renderer) {
         // Zoom in or out
-        if self.input_state.scroll_delta > 0. {
-            self.scale /= 1.05;
-        } else if self.input_state.scroll_delta < 0. {
-            self.scale *= 1.05;
-        }
+        self.shader_data.u_view[3][3] *= 1.05_f64.powf(self.input_state.scroll_delta as f64) as f32;
+        let right = quaternion::rotate_vector(self.orientation, [1., 0., 0.]);
+        let mv_up = Vector3::new(0., 1., 0.);
+        let mv_right = Vector3::new(right[0], 0., right[2]);
+        let mv_front = {
+            let front = quaternion::rotate_vector(self.orientation, [0., 0., 1.]);
+            Vector3::new(front[0], 0., front[2])
+        };
+
         // Move speed scaled by zoom level
-        let move_speed = MOVE_SPEED * self.dt * self.scale.x;
-        // Panning
-        if self.input_state.pan_up {
-            self.translation += Vector2::new(0.0, move_speed);
-        }
-        if self.input_state.pan_down {
-            self.translation += Vector2::new(0.0, -move_speed);
-        }
-        if self.input_state.pan_right {
-            self.translation += Vector2::new(move_speed, 0.0);
-        }
-        if self.input_state.pan_left {
-            self.translation += Vector2::new(-move_speed, 0.0);
-        }
-        // Toggle between julia and mandelbrot
-        if self.input_state.toggle_julia {
-            self.is_julia = !self.is_julia;
-        }
-        // Toggle c
-        if self.input_state.toggle_c {
-            self.is_c_paused = !self.is_c_paused;
-        }
-        // Update c
-        if !self.is_c_paused {
-            // Scale normalized mouse pos between -1.0 and 1.0;
-            let mouse_pos = self.input_state.normalized_mouse_pos() * 2.0 - Vector2::new(1.0, 1.0);
-            // Scale by our zoom (scale) level so when zooming in the movement on julia is not so drastic
-            self.c = mouse_pos * self.scale.x;
-        }
-        // Update how many iterations we have
-        if self.input_state.increase_iterations {
-            self.max_iters += 1;
-        }
-        if self.input_state.decrease_iterations {
-            if self.max_iters as i32 - 1 <= 0 {
-                self.max_iters = 0;
-            } else {
-                self.max_iters -= 1;
-            }
-        }
-        // Randomize our palette
-        if self.input_state.randomize_palette {
-            self.fractal_pipeline.randomize_palette();
+        let move_speed = SPEED * self.shader_data.dt;
+        let mut delta = self.input_state.controls_move;
+        delta = Matrix3::from_cols(mv_front, mv_right, mv_up) * delta;
+        delta *= move_speed;
+        self.shader_data.u_view[3] =
+            vecmath::vec4_add(self.shader_data.u_view[3], [delta.x, delta.y, delta.z, 0.]);
+        if self.input_state.mouse_delta.x != 0. && self.input_state.mouse_delta.y != 0. {
+            let d = self.input_state.mouse_delta;
+
+            let q_x = quaternion::axis_angle::<f32>(
+                [0., 1., 0.],
+                d.x as f32 / self.shader_data.u_view[3][3] * SENSATIVITY,
+            );
+            let q_y = quaternion::axis_angle::<f32>(
+                right,
+                d.y as f32 / self.shader_data.u_view[3][3] * SENSATIVITY,
+            );
+            let q_z = quaternion::rotation_from_to(right, [mv_right.x, mv_right.y, mv_right.z]);
+            self.orientation = quaternion::mul(q_x, self.orientation);
+            self.orientation = quaternion::mul(q_y, self.orientation);
+            self.orientation = quaternion::mul(q_z, self.orientation);
+
+            let rot = quat_to_mat3(self.orientation);
+
+            (0..3).for_each(|i| {
+                (0..3).for_each(|j| {
+                    self.shader_data.u_view[i][j] = rot[i][j];
+                })
+            });
         }
         // Toggle full-screen
         if self.input_state.toggle_full_screen {
-            renderer.toggle_full_screen()
+            renderer.toggle_full_screen();
         }
+        self.input_state.mouse_delta = Vector2::new(0.0, 0.0);
     }
 
     /// Update input state
@@ -209,58 +215,39 @@ fn state_is_pressed(state: ElementState) -> bool {
 /// Panning is one of those where continuous movement feels better.
 struct InputState {
     pub window_size: [u32; 2],
-    pub pan_up: bool,
-    pub pan_down: bool,
-    pub pan_right: bool,
-    pub pan_left: bool,
-    pub increase_iterations: bool,
-    pub decrease_iterations: bool,
-    pub randomize_palette: bool,
     pub toggle_full_screen: bool,
-    pub toggle_julia: bool,
-    pub toggle_c: bool,
     pub should_quit: bool,
     pub scroll_delta: f32,
     pub mouse_pos: Vector2<f32>,
+    pub mouse_delta: Vector2<f32>,
+    pub controls_move: Vector3<f32>,
 }
 
 impl InputState {
     fn new() -> InputState {
         InputState {
             window_size: RenderOptions::default().window_size,
-            pan_up: false,
-            pan_down: false,
-            pan_right: false,
-            pan_left: false,
-            increase_iterations: false,
-            decrease_iterations: false,
-            randomize_palette: false,
             toggle_full_screen: false,
-            toggle_julia: false,
-            toggle_c: false,
             should_quit: false,
             scroll_delta: 0.0,
             mouse_pos: Vector2::new(0.0, 0.0),
+            mouse_delta: Vector2::new(0.0, 0.0),
+            controls_move: Vector3::new(0.0, 0.0, 0.0),
         }
     }
 
-    fn normalized_mouse_pos(&self) -> Vector2<f32> {
-        Vector2::new(
-            (self.mouse_pos.x / self.window_size[0] as f32).clamp(0.0, 1.0),
-            (self.mouse_pos.y / self.window_size[1] as f32).clamp(0.0, 1.0),
-        )
-    }
+    // fn normalized_mouse_pos(&self) -> Vector2<f32> {
+    //     Vector2::new(
+    //         (self.mouse_pos.x / self.window_size[0] as f32).clamp(0.0, 1.0),
+    //         (self.mouse_pos.y / self.window_size[1] as f32).clamp(0.0, 1.0),
+    //     )
+    // }
 
     // Resets values that should be reset. All incremental mappings and toggles should be reset.
     fn reset(&mut self) {
         *self = InputState {
             scroll_delta: 0.0,
             toggle_full_screen: false,
-            toggle_julia: false,
-            toggle_c: false,
-            randomize_palette: false,
-            increase_iterations: false,
-            decrease_iterations: false,
             ..*self
         }
     }
@@ -285,15 +272,49 @@ impl InputState {
         if let Some(key_code) = input.virtual_keycode {
             match key_code {
                 VirtualKeyCode::Escape => self.should_quit = state_is_pressed(input.state),
-                VirtualKeyCode::W => self.pan_up = state_is_pressed(input.state),
-                VirtualKeyCode::A => self.pan_left = state_is_pressed(input.state),
-                VirtualKeyCode::S => self.pan_down = state_is_pressed(input.state),
-                VirtualKeyCode::D => self.pan_right = state_is_pressed(input.state),
+                VirtualKeyCode::W => {
+                    if state_is_pressed(input.state) {
+                        self.controls_move.x = 1_f32.min(self.controls_move.x + 1.)
+                    } else {
+                        self.controls_move.x = 0_f32.min(self.controls_move.x)
+                    }
+                }
+                VirtualKeyCode::A => {
+                    if state_is_pressed(input.state) {
+                        self.controls_move.y = -1_f32.max(self.controls_move.y - 1.)
+                    } else {
+                        self.controls_move.y = 0_f32.max(self.controls_move.y)
+                    }
+                }
+                VirtualKeyCode::S => {
+                    if state_is_pressed(input.state) {
+                        self.controls_move.x = -1_f32.max(self.controls_move.x - 1.)
+                    } else {
+                        self.controls_move.x = 0_f32.max(self.controls_move.x)
+                    }
+                }
+                VirtualKeyCode::D => {
+                    if state_is_pressed(input.state) {
+                        self.controls_move.y = 1_f32.min(self.controls_move.y + 1.)
+                    } else {
+                        self.controls_move.y = 0_f32.min(self.controls_move.y)
+                    }
+                }
+                VirtualKeyCode::Space => {
+                    if state_is_pressed(input.state) {
+                        self.controls_move.z = 1_f32.min(self.controls_move.z + 1.)
+                    } else {
+                        self.controls_move.z = 0_f32.min(self.controls_move.z)
+                    }
+                }
+                VirtualKeyCode::LShift => {
+                    if state_is_pressed(input.state) {
+                        self.controls_move.z = -1_f32.max(self.controls_move.z - 1.)
+                    } else {
+                        self.controls_move.z = 0_f32.max(self.controls_move.z)
+                    }
+                }
                 VirtualKeyCode::F => self.toggle_full_screen = state_is_pressed(input.state),
-                VirtualKeyCode::Return => self.randomize_palette = state_is_pressed(input.state),
-                VirtualKeyCode::Equals => self.increase_iterations = state_is_pressed(input.state),
-                VirtualKeyCode::Minus => self.decrease_iterations = state_is_pressed(input.state),
-                VirtualKeyCode::Space => self.toggle_julia = state_is_pressed(input.state),
                 _ => (),
             }
         }
@@ -310,14 +331,46 @@ impl InputState {
 
     /// Update mouse position
     fn on_cursor_moved_event(&mut self, pos: &PhysicalPosition<f64>) {
-        self.mouse_pos = Vector2::new(pos.x as f32, pos.y as f32);
+        let next = Vector2::new(pos.x as f32, pos.y as f32);
+        self.mouse_delta = next - self.mouse_pos;
+        self.mouse_pos = next;
     }
 
     /// Update toggle julia state (if right mouse is clicked)
-    fn on_mouse_click_event(&mut self, state: ElementState, mouse_btn: winit::event::MouseButton) {
+    fn on_mouse_click_event(&mut self, _state: ElementState, mouse_btn: winit::event::MouseButton) {
         match mouse_btn {
-            MouseButton::Right => self.toggle_c = state_is_pressed(state),
             _ => (),
         };
     }
+}
+
+fn quat_to_mat3((w, r): quaternion::Quaternion<f32>) -> vecmath::Matrix3<f32> {
+    let mut mat = [[0.; 3]; 3];
+
+    let del = |i, j| (i == j) as i32 as f32;
+    let eps = |i, j, k| {
+        ((i as i32 - j as i32) * (j as i32 - k as i32) * (k as i32 - i as i32)) as f32 / 2.
+    };
+
+    let mut cross_mat = [[0.; 3]; 3];
+
+    (0..3).for_each(|m| {
+        (0..3).for_each(|k| {
+            cross_mat[m][k] = (0..3)
+                .map(|i| (0..3).map(|j| del(m, i) * eps(i, j, k) * r[j]).sum::<f32>())
+                .sum::<f32>();
+        })
+    });
+
+    (0..3).for_each(|i| {
+        (0..3).for_each(|j| {
+            mat[i][j] = del(i, j)
+                - 2. * (w * cross_mat[i][j]
+                    - (0..3)
+                        .map(|k| cross_mat[i][k] * cross_mat[k][j])
+                        .sum::<f32>());
+        })
+    });
+
+    mat
 }
