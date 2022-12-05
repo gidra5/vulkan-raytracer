@@ -7,31 +7,47 @@
 // notice may not be copied, modified, or distributed except
 // according to those terms.
 
-use crate::renderer::InterimImageView;
+use cgmath::Vector2;
+use rand::Rng;
 use std::sync::Arc;
 use vulkano::buffer::CpuBufferPool;
 use vulkano::{
-    buffer::BufferUsage,
-    command_buffer::{AutoCommandBufferBuilder, CommandBufferUsage, PrimaryCommandBuffer},
-    descriptor_set::{PersistentDescriptorSet, WriteDescriptorSet},
+    buffer::{BufferUsage, CpuAccessibleBuffer},
+    command_buffer::{
+        allocator::StandardCommandBufferAllocator, AutoCommandBufferBuilder, CommandBufferUsage,
+        PrimaryCommandBufferAbstract,
+    },
+    descriptor_set::{
+        allocator::StandardDescriptorSetAllocator, PersistentDescriptorSet, WriteDescriptorSet,
+    },
     device::Queue,
     image::ImageAccess,
+    memory::allocator::StandardMemoryAllocator,
     pipeline::{ComputePipeline, Pipeline, PipelineBindPoint},
     sync::GpuFuture,
 };
+use vulkano_util::renderer::DeviceImageView;
 
 pub struct FractalComputePipeline {
-    gfx_queue: Arc<Queue>,
+    queue: Arc<Queue>,
     pipeline: Arc<ComputePipeline>,
+    memory_allocator: Arc<StandardMemoryAllocator>,
+    command_buffer_allocator: Arc<StandardCommandBufferAllocator>,
+    descriptor_set_allocator: Arc<StandardDescriptorSetAllocator>,
     uniform_buffer: CpuBufferPool<cs::ty::Data>,
 }
 
 impl FractalComputePipeline {
-    pub fn new(gfx_queue: Arc<Queue>) -> FractalComputePipeline {
+    pub fn new(
+        queue: Arc<Queue>,
+        memory_allocator: Arc<StandardMemoryAllocator>,
+        command_buffer_allocator: Arc<StandardCommandBufferAllocator>,
+        descriptor_set_allocator: Arc<StandardDescriptorSetAllocator>,
+    ) -> FractalComputePipeline {
         let pipeline = {
-            let shader = cs::load(gfx_queue.device().clone()).unwrap();
+            let shader = cs::load(queue.device().clone()).unwrap();
             ComputePipeline::new(
-                gfx_queue.device().clone(),
+                queue.device().clone(),
                 shader.entry_point("main").unwrap(),
                 &(),
                 None,
@@ -39,29 +55,36 @@ impl FractalComputePipeline {
             )
             .unwrap()
         };
-        let uniform_buffer = CpuBufferPool::new(gfx_queue.device().clone(), BufferUsage::all());
+
         FractalComputePipeline {
-            gfx_queue,
+            queue,
             pipeline,
+            memory_allocator,
+            command_buffer_allocator,
+            descriptor_set_allocator,
             uniform_buffer,
         }
     }
-    pub fn compute(&mut self, image: InterimImageView, data: cs::ty::Data) -> Box<dyn GpuFuture> {
+    pub fn compute(
+        &self,
+        image: DeviceImageView, data: cs::ty::Data,
+    ) -> Box<dyn GpuFuture> {
         // Resize image if needed
         let img_dims = image.image().dimensions().width_height();
         let pipeline_layout = self.pipeline.layout();
         let desc_layout = pipeline_layout.set_layouts().get(0).unwrap();
         let set = PersistentDescriptorSet::new(
+            &self.descriptor_set_allocator,
             desc_layout.clone(),
             [
-                WriteDescriptorSet::image_view(0, image.clone()),
+                WriteDescriptorSet::image_view(0, image),
                 WriteDescriptorSet::buffer(1, self.uniform_buffer.next(data).unwrap()),
             ],
         )
         .unwrap();
         let mut builder = AutoCommandBufferBuilder::primary(
-            self.gfx_queue.device().clone(),
-            self.gfx_queue.family(),
+            &self.command_buffer_allocator,
+            self.queue.queue_family_index(),
             CommandBufferUsage::OneTimeSubmit,
         )
         .unwrap();
@@ -72,7 +95,7 @@ impl FractalComputePipeline {
             .dispatch([img_dims[0], img_dims[1], 1])
             .unwrap();
         let command_buffer = builder.build().unwrap();
-        let finished = command_buffer.execute(self.gfx_queue.clone()).unwrap();
+        let finished = command_buffer.execute(self.queue.clone()).unwrap();
         finished.then_signal_fence_and_flush().unwrap().boxed()
     }
 }

@@ -13,7 +13,8 @@ vecmath = "*"
 # this would be out of scope. In order to open a window, we are going to use the `winit` crate.
 winit = "*"
 # The `vulkano` crate is the main crate that you must use to use Vulkan.
-vulkano = "0.29"
+vulkano = "0.32"
+vulkano-util = "0.32"
 # Provides the `shader!` macro that is used to generate code for using shaders.
 vulkano-shaders = {version = "*", features = ["shaderc-build-from-source"]}
 # The `vulkano_win` crate is the link between `vulkano` and `winit`. Vulkano doesn't know about winit,

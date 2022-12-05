@@ -7,29 +7,39 @@
 // notice may not be copied, modified, or distributed except
 // according to those terms.
 
-use crate::{
-    pixels_draw_pipeline::PixelsDrawPipeline,
-    renderer::{FinalImageView, InterimImageView},
-};
+use crate::pixels_draw_pipeline::PixelsDrawPipeline;
 use std::sync::Arc;
 use vulkano::{
-    command_buffer::{AutoCommandBufferBuilder, CommandBufferUsage, SubpassContents},
+    command_buffer::{
+        allocator::StandardCommandBufferAllocator, AutoCommandBufferBuilder, CommandBufferUsage,
+        RenderPassBeginInfo, SubpassContents,
+    },
+    descriptor_set::allocator::StandardDescriptorSetAllocator,
     device::Queue,
     format::Format,
     image::ImageAccess,
+    memory::allocator::MemoryAllocator,
     render_pass::{Framebuffer, FramebufferCreateInfo, RenderPass, Subpass},
     sync::GpuFuture,
 };
+use vulkano_util::renderer::{DeviceImageView, SwapchainImageView};
 
 /// A render pass which places an incoming image over frame filling it
 pub struct RenderPassPlaceOverFrame {
     gfx_queue: Arc<Queue>,
     render_pass: Arc<RenderPass>,
     pixels_draw_pipeline: PixelsDrawPipeline,
+    command_buffer_allocator: Arc<StandardCommandBufferAllocator>,
 }
 
 impl RenderPassPlaceOverFrame {
-    pub fn new(gfx_queue: Arc<Queue>, output_format: Format) -> RenderPassPlaceOverFrame {
+    pub fn new(
+        gfx_queue: Arc<Queue>,
+        memory_allocator: &impl MemoryAllocator,
+        command_buffer_allocator: Arc<StandardCommandBufferAllocator>,
+        descriptor_set_allocator: Arc<StandardDescriptorSetAllocator>,
+        output_format: Format,
+    ) -> RenderPassPlaceOverFrame {
         let render_pass = vulkano::single_pass_renderpass!(gfx_queue.device().clone(),
             attachments: {
                 color: {
@@ -40,27 +50,35 @@ impl RenderPassPlaceOverFrame {
                 }
             },
             pass: {
-                    color: [color],
-                    depth_stencil: {}
+                color: [color],
+                depth_stencil: {}
             }
         )
         .unwrap();
         let subpass = Subpass::from(render_pass.clone(), 0).unwrap();
-        let pixels_draw_pipeline = PixelsDrawPipeline::new(gfx_queue.clone(), subpass);
+        let pixels_draw_pipeline = PixelsDrawPipeline::new(
+            gfx_queue.clone(),
+            subpass,
+            memory_allocator,
+            command_buffer_allocator.clone(),
+            descriptor_set_allocator,
+        );
+
         RenderPassPlaceOverFrame {
             gfx_queue,
             render_pass,
             pixels_draw_pipeline,
+            command_buffer_allocator,
         }
     }
 
     /// Place view exactly over swapchain image target.
     /// Texture draw pipeline uses a quad onto which it places the view.
     pub fn render<F>(
-        &mut self,
+        &self,
         before_future: F,
-        view: InterimImageView,
-        target: FinalImageView,
+        view: DeviceImageView,
+        target: SwapchainImageView,
     ) -> Box<dyn GpuFuture>
     where
         F: GpuFuture + 'static,
@@ -78,17 +96,19 @@ impl RenderPassPlaceOverFrame {
         .unwrap();
         // Create primary command buffer builder
         let mut command_buffer_builder = AutoCommandBufferBuilder::primary(
-            self.gfx_queue.device().clone(),
-            self.gfx_queue.family(),
+            &self.command_buffer_allocator,
+            self.gfx_queue.queue_family_index(),
             CommandBufferUsage::OneTimeSubmit,
         )
         .unwrap();
         // Begin render pass
         command_buffer_builder
             .begin_render_pass(
-                framebuffer,
+                RenderPassBeginInfo {
+                    clear_values: vec![Some([0.0; 4].into())],
+                    ..RenderPassBeginInfo::framebuffer(framebuffer)
+                },
                 SubpassContents::SecondaryCommandBuffers,
-                vec![[0.0; 4].into()],
             )
             .unwrap();
         // Create secondary command buffer from texture pipeline & send draw commands

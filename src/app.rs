@@ -7,20 +7,25 @@
 // notice may not be copied, modified, or distributed except
 // according to those terms.
 
-use crate::{
-    fractal_compute_pipeline::cs,
-    fractal_compute_pipeline::FractalComputePipeline,
-    renderer::{InterimImageView, RenderOptions, Renderer},
-};
-use cgmath::Matrix3;
+use crate::fractal_compute_pipeline::FractalComputePipeline;
+use crate::place_over_frame::RenderPassPlaceOverFrame;
 use cgmath::Vector2;
-use cgmath::Vector3;
-use core::f64::consts::PI;
+use std::sync::Arc;
 use std::time::Instant;
+use vulkano::command_buffer::allocator::StandardCommandBufferAllocator;
+use vulkano::descriptor_set::allocator::StandardDescriptorSetAllocator;
+use vulkano::device::Queue;
+use vulkano::memory::allocator::StandardMemoryAllocator;
 use vulkano::sync::GpuFuture;
+use vulkano_util::renderer::{DeviceImageView, VulkanoWindowRenderer};
+use vulkano_util::window::WindowDescriptor;
+use winit::window::Fullscreen;
 use winit::{
     dpi::PhysicalPosition,
-    event::{ElementState, Event, KeyboardInput, MouseScrollDelta, VirtualKeyCode, WindowEvent},
+    event::{
+        ElementState, Event, KeyboardInput, MouseButton, MouseScrollDelta, VirtualKeyCode,
+        WindowEvent,
+    },
 };
 
 const SENSATIVITY: f32 = 0.002;
@@ -30,6 +35,8 @@ const SPEED: f32 = 1.;
 pub struct FractalApp {
     /// Pipeline that computes Mandelbrot & Julia fractals and writes them to an image
     fractal_pipeline: FractalComputePipeline,
+    /// Our render pipeline (pass)
+    pub place_over_frame: RenderPassPlaceOverFrame,
     time: Instant,
     dt_sum: f32,
     frame_count: f32,
@@ -41,9 +48,32 @@ pub struct FractalApp {
 }
 
 impl FractalApp {
-    pub fn new(renderer: &Renderer) -> FractalApp {
+    pub fn new(gfx_queue: Arc<Queue>, image_format: vulkano::format::Format) -> FractalApp {
+        let memory_allocator = Arc::new(StandardMemoryAllocator::new_default(
+            gfx_queue.device().clone(),
+        ));
+        let command_buffer_allocator = Arc::new(StandardCommandBufferAllocator::new(
+            gfx_queue.device().clone(),
+            Default::default(),
+        ));
+        let descriptor_set_allocator = Arc::new(StandardDescriptorSetAllocator::new(
+            gfx_queue.device().clone(),
+        ));
+
         FractalApp {
-            fractal_pipeline: FractalComputePipeline::new(renderer.queue()),
+            fractal_pipeline: FractalComputePipeline::new(
+                gfx_queue.clone(),
+                memory_allocator.clone(),
+                command_buffer_allocator.clone(),
+                descriptor_set_allocator.clone(),
+            ),
+            place_over_frame: RenderPassPlaceOverFrame::new(
+                gfx_queue,
+                &memory_allocator,
+                command_buffer_allocator,
+                descriptor_set_allocator,
+                image_format,
+            ),
             time: Instant::now(),
             frame_count: 0.0,
             avg_fps: 0.0,
@@ -107,7 +137,7 @@ Usage:
     }
 
     /// Run our compute pipeline and return a future of when the compute is finished
-    pub fn compute(&mut self, image_target: InterimImageView) -> Box<dyn GpuFuture> {
+    pub fn compute(&mut self, image_target: DeviceImageView) -> Box<dyn GpuFuture> {
         self.fractal_pipeline
             .compute(image_target, self.shader_data)
     }
@@ -143,7 +173,7 @@ Usage:
     }
 
     /// Updates app state based on input state
-    pub fn update_state_after_inputs(&mut self, renderer: &mut Renderer) {
+    pub fn update_state_after_inputs(&mut self, renderer: &mut VulkanoWindowRenderer) {
         // Zoom in or out
         self.shader_data.u_view[3][3] *= 1.05_f64.powf(self.input_state.scroll_delta as f64) as f32;
         let right = quaternion::rotate_vector(self.orientation, [1., 0., 0.]);
@@ -193,7 +223,7 @@ Usage:
     }
 
     /// Update input state
-    pub fn handle_input(&mut self, window_size: [u32; 2], event: &Event<()>) {
+    pub fn handle_input(&mut self, window_size: [f32; 2], event: &Event<()>) {
         self.input_state.handle_input(window_size, event);
     }
 
@@ -214,7 +244,7 @@ fn state_is_pressed(state: ElementState) -> bool {
 /// Winit only has Pressed and Released events, thus continuous movement needs toggles.
 /// Panning is one of those where continuous movement feels better.
 struct InputState {
-    pub window_size: [u32; 2],
+    pub window_size: [f32; 2],
     pub toggle_full_screen: bool,
     pub should_quit: bool,
     pub scroll_delta: f32,
@@ -226,7 +256,10 @@ struct InputState {
 impl InputState {
     fn new() -> InputState {
         InputState {
-            window_size: RenderOptions::default().window_size,
+            window_size: [
+                WindowDescriptor::default().width,
+                WindowDescriptor::default().height,
+            ],
             toggle_full_screen: false,
             should_quit: false,
             scroll_delta: 0.0,
@@ -252,7 +285,7 @@ impl InputState {
         }
     }
 
-    fn handle_input(&mut self, window_size: [u32; 2], event: &Event<()>) {
+    fn handle_input(&mut self, window_size: [f32; 2], event: &Event<()>) {
         self.window_size = window_size;
         if let winit::event::Event::WindowEvent { event, .. } = event {
             match event {
@@ -331,16 +364,14 @@ impl InputState {
 
     /// Update mouse position
     fn on_cursor_moved_event(&mut self, pos: &PhysicalPosition<f64>) {
-        let next = Vector2::new(pos.x as f32, pos.y as f32);
-        self.mouse_delta = next - self.mouse_pos;
-        self.mouse_pos = next;
+        self.mouse_pos = Vector2::new(pos.x as f32, pos.y as f32);
     }
 
     /// Update toggle julia state (if right mouse is clicked)
-    fn on_mouse_click_event(&mut self, _state: ElementState, mouse_btn: winit::event::MouseButton) {
-        match mouse_btn {
-            _ => (),
-        };
+    fn on_mouse_click_event(&mut self, state: ElementState, mouse_btn: winit::event::MouseButton) {
+        if mouse_btn == MouseButton::Right {
+            self.toggle_c = state_is_pressed(state)
+        }
     }
 }
 
