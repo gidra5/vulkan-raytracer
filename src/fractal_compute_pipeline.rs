@@ -7,10 +7,7 @@
 // notice may not be copied, modified, or distributed except
 // according to those terms.
 
-use cgmath::Vector2;
-use rand::Rng;
 use std::sync::Arc;
-use vulkano::buffer::CpuBufferPool;
 use vulkano::{
     buffer::{BufferUsage, CpuAccessibleBuffer},
     command_buffer::{
@@ -34,15 +31,30 @@ pub struct FractalComputePipeline {
     memory_allocator: Arc<StandardMemoryAllocator>,
     command_buffer_allocator: Arc<StandardCommandBufferAllocator>,
     descriptor_set_allocator: Arc<StandardDescriptorSetAllocator>,
-    uniform_buffer: CpuBufferPool<cs::ty::Data>,
+    uniform_buffer: Arc<CpuAccessibleBuffer<cs::ty::Data>>,
 }
 
 impl FractalComputePipeline {
+    pub fn set_shader_data(&mut self, shader_data: cs::ty::Data) {
+        self.uniform_buffer = CpuAccessibleBuffer::from_data(
+            &self.memory_allocator,
+            BufferUsage {
+                storage_buffer: true,
+                uniform_buffer: true,
+                ..BufferUsage::empty()
+            },
+            false,
+            shader_data,
+        )
+        .unwrap();
+    }
+
     pub fn new(
         queue: Arc<Queue>,
         memory_allocator: Arc<StandardMemoryAllocator>,
         command_buffer_allocator: Arc<StandardCommandBufferAllocator>,
         descriptor_set_allocator: Arc<StandardDescriptorSetAllocator>,
+        shader_data: cs::ty::Data,
     ) -> FractalComputePipeline {
         let pipeline = {
             let shader = cs::load(queue.device().clone()).unwrap();
@@ -55,7 +67,17 @@ impl FractalComputePipeline {
             )
             .unwrap()
         };
-
+        let uniform_buffer = CpuAccessibleBuffer::from_data(
+            &memory_allocator,
+            BufferUsage {
+                storage_buffer: true,
+                uniform_buffer: true,
+                ..BufferUsage::empty()
+            },
+            false,
+            shader_data,
+        )
+        .unwrap();
         FractalComputePipeline {
             queue,
             pipeline,
@@ -65,10 +87,7 @@ impl FractalComputePipeline {
             uniform_buffer,
         }
     }
-    pub fn compute(
-        &self,
-        image: DeviceImageView, data: cs::ty::Data,
-    ) -> Box<dyn GpuFuture> {
+    pub fn compute(&self, image: DeviceImageView) -> Box<dyn GpuFuture> {
         // Resize image if needed
         let img_dims = image.image().dimensions().width_height();
         let pipeline_layout = self.pipeline.layout();
@@ -78,7 +97,7 @@ impl FractalComputePipeline {
             desc_layout.clone(),
             [
                 WriteDescriptorSet::image_view(0, image),
-                WriteDescriptorSet::buffer(1, self.uniform_buffer.next(data).unwrap()),
+                WriteDescriptorSet::buffer(1, self.uniform_buffer.clone()),
             ],
         )
         .unwrap();

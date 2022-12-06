@@ -7,9 +7,13 @@
 // notice may not be copied, modified, or distributed except
 // according to those terms.
 
+use crate::fractal_compute_pipeline::cs;
 use crate::fractal_compute_pipeline::FractalComputePipeline;
 use crate::place_over_frame::RenderPassPlaceOverFrame;
+use cgmath::Matrix3;
 use cgmath::Vector2;
+use cgmath::Vector3;
+use std::f64::consts::PI;
 use std::sync::Arc;
 use std::time::Instant;
 use vulkano::command_buffer::allocator::StandardCommandBufferAllocator;
@@ -22,17 +26,14 @@ use vulkano_util::window::WindowDescriptor;
 use winit::window::Fullscreen;
 use winit::{
     dpi::PhysicalPosition,
-    event::{
-        ElementState, Event, KeyboardInput, MouseButton, MouseScrollDelta, VirtualKeyCode,
-        WindowEvent,
-    },
+    event::{ElementState, Event, KeyboardInput, MouseScrollDelta, VirtualKeyCode, WindowEvent},
 };
 
 const SENSATIVITY: f32 = 0.002;
 const SPEED: f32 = 1.;
 
 /// App for exploring Julia and Mandelbrot fractals
-pub struct FractalApp {
+pub struct App {
     /// Pipeline that computes Mandelbrot & Julia fractals and writes them to an image
     fractal_pipeline: FractalComputePipeline,
     /// Our render pipeline (pass)
@@ -47,8 +48,45 @@ pub struct FractalApp {
     shader_data: cs::ty::Data,
 }
 
-impl FractalApp {
-    pub fn new(gfx_queue: Arc<Queue>, image_format: vulkano::format::Format) -> FractalApp {
+impl App {
+    pub fn new(gfx_queue: Arc<Queue>, image_format: vulkano::format::Format) -> App {
+        let shader_data = cs::ty::Data {
+            u_view: [
+                [1., 0., 0., 0.],
+                [0., 1., 0., 0.],
+                [0., 0., 1., 0.],
+                [0., 0., -6., 1.],
+            ],
+            t: 0.,
+            dt: 0.,
+            a: 0,
+            b: 0,
+            c: 0,
+            d: 0,
+            e: 0,
+            f: 0,
+            samples: 1,
+            depth: 1,
+            max_dist: 1e+6,
+            min_dist: 1e-4,
+            cameraFovAngle: (PI * 2. / 3.) as f32,
+            paniniDistance: 1.,
+            lensFocusDistance: 4.,
+            circleOfConfusionRadius: 0.,
+            exposure: 1.,
+            ambience: 0.,
+            scatter_t: 100.,
+            scatter_bias: 1.,
+            light_pos: [2., 6.89, 1.],
+            light_color: [0xff as f32 / 255., 0xff as f32 / 255., 0xff as f32 / 255.],
+            sphere_center: [-1., 0., 0.],
+            plane_center: [0., -1., 0.],
+            cylinder_center: [1., 0., 4.],
+            _dummy0: [0; 4],
+            _dummy1: [0; 4],
+            _dummy2: [0; 4],
+            _dummy3: [0; 4],
+        };
         let memory_allocator = Arc::new(StandardMemoryAllocator::new_default(
             gfx_queue.device().clone(),
         ));
@@ -60,12 +98,13 @@ impl FractalApp {
             gfx_queue.device().clone(),
         ));
 
-        FractalApp {
+        App {
             fractal_pipeline: FractalComputePipeline::new(
                 gfx_queue.clone(),
                 memory_allocator.clone(),
                 command_buffer_allocator.clone(),
                 descriptor_set_allocator.clone(),
+                shader_data,
             ),
             place_over_frame: RenderPassPlaceOverFrame::new(
                 gfx_queue,
@@ -80,66 +119,14 @@ impl FractalApp {
             dt_sum: 0.0,
             input_state: InputState::new(),
             orientation: quaternion::id::<f32>(),
-            shader_data: cs::ty::Data {
-                u_view: [
-                    [1., 0., 0., 0.],
-                    [0., 1., 0., 0.],
-                    [0., 0., 1., 0.],
-                    [0., 0., -6., 1.],
-                ],
-                t: 0.,
-                dt: 0.,
-                a: 0,
-                b: 0,
-                c: 0,
-                d: 0,
-                e: 0,
-                f: 0,
-                samples: 1,
-                depth: 3,
-                max_dist: 1e+6,
-                min_dist: 1e-4,
-                cameraFovAngle: (PI * 2. / 3.) as f32,
-                paniniDistance: 1.,
-                lensFocusDistance: 4.,
-                circleOfConfusionRadius: 0.,
-                exposure: 1.,
-                ambience: 0.,
-                scatter_t: 100.,
-                scatter_bias: 1.,
-                light_pos: [2., 6.89, 1.],
-                light_color: [0xff as f32 / 255., 0xff as f32 / 255., 0xff as f32 / 255.],
-                sphere_center: [-1., 0., 0.],
-                plane_center: [0., -1., 0.],
-                cylinder_center: [1., 0., 4.],
-                _dummy0: [0; 4],
-                _dummy1: [0; 4],
-                _dummy2: [0; 4],
-                _dummy3: [0; 4],
-            },
+            shader_data,
         }
-    }
-
-    pub fn print_guide(&self) {
-        println!(
-            "\
-Usage:
-    WASD: Pan view
-    Scroll: Zoom in/out
-    Space: Toggle between Mandelbrot and Julia
-    Enter: Randomize color palette
-    Equals/Minus: Increase/Decrease max iterations
-    F: Toggle full-screen
-    Right mouse: Stop movement in Julia (mouse position determines c)
-    Esc: Quit\
-        "
-        );
     }
 
     /// Run our compute pipeline and return a future of when the compute is finished
     pub fn compute(&mut self, image_target: DeviceImageView) -> Box<dyn GpuFuture> {
-        self.fractal_pipeline
-            .compute(image_target, self.shader_data)
+        self.fractal_pipeline.set_shader_data(self.shader_data);
+        self.fractal_pipeline.compute(image_target)
     }
 
     /// Should the app quit? (on esc)
@@ -217,7 +204,17 @@ Usage:
         }
         // Toggle full-screen
         if self.input_state.toggle_full_screen {
-            renderer.toggle_full_screen();
+            let window = renderer.window();
+            let is_full_screen = window.fullscreen().is_some();
+            let fullscreen = if !is_full_screen {
+                window
+                    .current_monitor()
+                    .and_then(|monitor| monitor.video_modes().next())
+                    .map(|mode| Fullscreen::Exclusive(mode))
+            } else {
+                None
+            };
+            renderer.window().set_fullscreen(fullscreen);
         }
         self.input_state.mouse_delta = Vector2::new(0.0, 0.0);
     }
@@ -368,10 +365,10 @@ impl InputState {
     }
 
     /// Update toggle julia state (if right mouse is clicked)
-    fn on_mouse_click_event(&mut self, state: ElementState, mouse_btn: winit::event::MouseButton) {
-        if mouse_btn == MouseButton::Right {
-            self.toggle_c = state_is_pressed(state)
-        }
+    fn on_mouse_click_event(&mut self, _state: ElementState, mouse_btn: winit::event::MouseButton) {
+        match mouse_btn {
+            _ => (),
+        };
     }
 }
 

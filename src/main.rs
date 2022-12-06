@@ -7,12 +7,12 @@
 // notice may not be copied, modified, or distributed except
 // according to those terms.
 
-use crate::app::FractalApp;
+use crate::app::App;
 use vulkano::image::ImageUsage;
 use vulkano::swapchain::PresentMode;
 use vulkano::sync::GpuFuture;
 use vulkano_util::context::{VulkanoConfig, VulkanoContext};
-use vulkano_util::renderer::{VulkanoWindowRenderer, DEFAULT_IMAGE_FORMAT};
+use vulkano_util::renderer::VulkanoWindowRenderer;
 use vulkano_util::window::{VulkanoWindows, WindowDescriptor};
 use winit::{
     event::{Event, WindowEvent},
@@ -43,20 +43,18 @@ fn main() {
         &event_loop,
         &context,
         &WindowDescriptor {
-            title: "Fractal".to_string(),
-            present_mode: PresentMode::Fifo,
+            title: "Raytracer".to_string(),
+            present_mode: PresentMode::Immediate,
             ..Default::default()
         },
         |_| {},
     );
 
-    // Add our render target image onto which we'll be rendering our fractals.
     let render_target_id = 0;
     let primary_window_renderer = windows.get_primary_renderer_mut().unwrap();
-    // Make sure the image usage is correct (based on your pipeline).
     primary_window_renderer.add_additional_image_view(
         render_target_id,
-        DEFAULT_IMAGE_FORMAT,
+        vulkano_util::renderer::DEFAULT_IMAGE_FORMAT,
         ImageUsage {
             sampled: true,
             storage: true,
@@ -66,21 +64,13 @@ fn main() {
         },
     );
 
-    // Create app to hold the logic of our fractal explorer
     let gfx_queue = context.graphics_queue();
     // We intend to eventually render on our swapchain, thus we use that format when creating the app here.
-    let mut app = FractalApp::new(
+    let mut app = App::new(
         gfx_queue.clone(),
         primary_window_renderer.swapchain_format(),
     );
-    app.print_guide();
 
-    // Basic loop for our runtime
-    // 1. Handle events
-    // 2. Update state based on events
-    // 3. Compute & Render
-    // 4. Reset input state
-    // 5. Update time & title
     loop {
         if !handle_events(&mut event_loop, primary_window_renderer, &mut app) {
             break;
@@ -112,7 +102,7 @@ fn main() {
 fn handle_events(
     event_loop: &mut EventLoop<()>,
     renderer: &mut VulkanoWindowRenderer,
-    app: &mut FractalApp,
+    app: &mut App,
 ) -> bool {
     let mut is_running = true;
     event_loop.run_return(|event, _, control_flow| {
@@ -137,7 +127,7 @@ fn handle_events(
 /// Orchestrate rendering here
 fn compute_then_render(
     renderer: &mut VulkanoWindowRenderer,
-    app: &mut FractalApp,
+    app: &mut App,
     target_image_id: usize,
 ) {
     // Start frame
