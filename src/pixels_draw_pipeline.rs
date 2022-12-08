@@ -232,8 +232,30 @@ layout(location = 0) out vec4 f_color;
 
 layout(set = 0, binding = 0) uniform sampler2D tex;
 
+vec3 ACESFilm(vec3 x)
+{
+  float a = 2.51f;
+  float b = 0.03f;
+  float c = 2.43f;
+  float d = 0.59f;
+  float e = 0.14f;
+  return clamp((x*(a*x + b)) / (x*(c*x + d) + e), 0.0f, 1.0f);
+}
+
+vec3 LinearToSRGB(vec3 rgb)
+{
+  rgb = clamp(rgb, 0.0f, 1.0f);
+    
+  return mix(
+    pow(rgb, vec3(1.0 / 2.4)) * 1.055 - 0.055,
+    rgb * 12.92,
+    lessThan(rgb, vec3(0.0031308))
+  );
+}
+
 void main() {
-    f_color = texture(tex, v_tex_coords);
+    vec4 tex_color = texture(tex, v_tex_coords);
+    f_color = vec4(LinearToSRGB(ACESFilm(tex_color.xyz)), 1.);
 }
 "
     }

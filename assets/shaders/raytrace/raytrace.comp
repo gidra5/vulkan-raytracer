@@ -1600,7 +1600,5 @@ void main() {
   }
   _frag_color /= samples;
   _frag_color *= exposure;
-  _frag_color = ACESFilm(_frag_color);
-  vec4 curr_color = vec4(imageLoad(img, ivec2(gl_GlobalInvocationID.xy)));
   imageStore(img, ivec2(gl_GlobalInvocationID.xy), vec4(LinearToSRGB(_frag_color), 1.));
 }

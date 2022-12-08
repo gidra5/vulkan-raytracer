@@ -7,8 +7,14 @@
 // notice may not be copied, modified, or distributed except
 // according to those terms.
 
+use std::sync::Arc;
+
 use crate::app::App;
+use place_over_frame::RenderPassPlaceOverFrame;
+use vulkano::command_buffer::allocator::StandardCommandBufferAllocator;
+use vulkano::descriptor_set::allocator::StandardDescriptorSetAllocator;
 use vulkano::image::ImageUsage;
+use vulkano::memory::allocator::StandardMemoryAllocator;
 use vulkano::swapchain::PresentMode;
 use vulkano::sync::GpuFuture;
 use vulkano_util::context::{VulkanoConfig, VulkanoContext};
@@ -24,6 +30,32 @@ mod app;
 mod fractal_compute_pipeline;
 mod pixels_draw_pipeline;
 mod place_over_frame;
+
+/// Handle events and return `bool` if we should quit
+fn handle_events(
+    event_loop: &mut EventLoop<()>,
+    renderer: &mut VulkanoWindowRenderer,
+    app: &mut App,
+) -> bool {
+    let mut is_running = true;
+    event_loop.run_return(|event, _, control_flow| {
+        *control_flow = ControlFlow::Wait;
+        match &event {
+            Event::WindowEvent { event, .. } => match event {
+                WindowEvent::CloseRequested => is_running = false,
+                WindowEvent::Resized(..) | WindowEvent::ScaleFactorChanged { .. } => {
+                    renderer.resize()
+                }
+                _ => (),
+            },
+            Event::MainEventsCleared => *control_flow = ControlFlow::Exit,
+            _ => (),
+        }
+        // Pass event for app to handle our inputs
+        app.handle_input(renderer.window_size(), &event);
+    });
+    is_running && app.is_running()
+}
 
 /// This is an example demonstrating an application with some more non-trivial functionality.
 /// It should get you more up to speed with how you can use Vulkano.
@@ -65,9 +97,24 @@ fn main() {
     );
 
     let gfx_queue = context.graphics_queue();
-    // We intend to eventually render on our swapchain, thus we use that format when creating the app here.
-    let mut app = App::new(
+    let mut app = App::new(gfx_queue.clone());
+
+    let memory_allocator = Arc::new(StandardMemoryAllocator::new_default(
+        gfx_queue.device().clone(),
+    ));
+    let command_buffer_allocator = Arc::new(StandardCommandBufferAllocator::new(
+        gfx_queue.device().clone(),
+        Default::default(),
+    ));
+    let descriptor_set_allocator = Arc::new(StandardDescriptorSetAllocator::new(
+        gfx_queue.device().clone(),
+    ));
+
+    let place_over_frame = RenderPassPlaceOverFrame::new(
         gfx_queue.clone(),
+        &memory_allocator,
+        command_buffer_allocator,
+        descriptor_set_allocator,
         primary_window_renderer.swapchain_format(),
     );
 
@@ -86,7 +133,34 @@ fn main() {
         }
 
         app.update_state_after_inputs(primary_window_renderer);
-        compute_then_render(primary_window_renderer, &mut app, render_target_id);
+
+        {
+            let target = primary_window_renderer.get_additional_image_view(render_target_id);
+            // Start frame
+            let before_pipeline_future = match primary_window_renderer.acquire() {
+                Err(e) => {
+                    println!("{}", e);
+                    return;
+                }
+                Ok(future) => future,
+            };
+
+            // Compute our fractal (writes to target image). Join future with `before_pipeline_future`.
+            let after_compute = app.compute(target.clone()).join(before_pipeline_future);
+            // Render image over frame. Input previous future. Draw on swapchain image
+            let command_buffer = place_over_frame
+                .command_buffer(target, primary_window_renderer.swapchain_image_view());
+
+            let after_renderpass_future = after_compute
+                .then_execute(gfx_queue.clone(), command_buffer)
+                .unwrap()
+                .boxed();
+
+            // Finish frame (which presents the view). Input last future. Wait for the future so resources are not in use
+            // when we render
+            primary_window_renderer.present(after_renderpass_future, true);
+        }
+
         app.reset_input_state();
         app.update_time();
         primary_window_renderer.window().set_title(&format!(
@@ -96,57 +170,4 @@ fn main() {
             app.dt(),
         ));
     }
-}
-
-/// Handle events and return `bool` if we should quit
-fn handle_events(
-    event_loop: &mut EventLoop<()>,
-    renderer: &mut VulkanoWindowRenderer,
-    app: &mut App,
-) -> bool {
-    let mut is_running = true;
-    event_loop.run_return(|event, _, control_flow| {
-        *control_flow = ControlFlow::Wait;
-        match &event {
-            Event::WindowEvent { event, .. } => match event {
-                WindowEvent::CloseRequested => is_running = false,
-                WindowEvent::Resized(..) | WindowEvent::ScaleFactorChanged { .. } => {
-                    renderer.resize()
-                }
-                _ => (),
-            },
-            Event::MainEventsCleared => *control_flow = ControlFlow::Exit,
-            _ => (),
-        }
-        // Pass event for app to handle our inputs
-        app.handle_input(renderer.window_size(), &event);
-    });
-    is_running && app.is_running()
-}
-
-/// Orchestrate rendering here
-fn compute_then_render(
-    renderer: &mut VulkanoWindowRenderer,
-    app: &mut App,
-    target_image_id: usize,
-) {
-    // Start frame
-    let before_pipeline_future = match renderer.acquire() {
-        Err(e) => {
-            println!("{}", e);
-            return;
-        }
-        Ok(future) => future,
-    };
-    // Retrieve target image
-    let image = renderer.get_additional_image_view(target_image_id);
-    // Compute our fractal (writes to target image). Join future with `before_pipeline_future`.
-    let after_compute = app.compute(image.clone()).join(before_pipeline_future);
-    // Render image over frame. Input previous future. Draw on swapchain image
-    let after_renderpass_future =
-        app.place_over_frame
-            .render(after_compute, image, renderer.swapchain_image_view());
-    // Finish frame (which presents the view). Input last future. Wait for the future so resources are not in use
-    // when we render
-    renderer.present(after_renderpass_future, true);
 }

@@ -9,7 +9,6 @@
 
 use crate::fractal_compute_pipeline::cs;
 use crate::fractal_compute_pipeline::FractalComputePipeline;
-use crate::place_over_frame::RenderPassPlaceOverFrame;
 use cgmath::Matrix3;
 use cgmath::Vector2;
 use cgmath::Vector3;
@@ -36,8 +35,6 @@ const SPEED: f32 = 1.;
 pub struct App {
     /// Pipeline that computes Mandelbrot & Julia fractals and writes them to an image
     fractal_pipeline: FractalComputePipeline,
-    /// Our render pipeline (pass)
-    pub place_over_frame: RenderPassPlaceOverFrame,
     time: Instant,
     dt_sum: f32,
     frame_count: f32,
@@ -49,7 +46,7 @@ pub struct App {
 }
 
 impl App {
-    pub fn new(gfx_queue: Arc<Queue>, image_format: vulkano::format::Format) -> App {
+    pub fn new(gfx_queue: Arc<Queue>) -> App {
         let shader_data = cs::ty::Data {
             u_view: [
                 [1., 0., 0., 0.],
@@ -105,13 +102,6 @@ impl App {
                 command_buffer_allocator.clone(),
                 descriptor_set_allocator.clone(),
                 shader_data,
-            ),
-            place_over_frame: RenderPassPlaceOverFrame::new(
-                gfx_queue,
-                &memory_allocator,
-                command_buffer_allocator,
-                descriptor_set_allocator,
-                image_format,
             ),
             time: Instant::now(),
             frame_count: 0.0,
