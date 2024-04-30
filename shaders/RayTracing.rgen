@@ -1,0 +1,167 @@
+#version 460
+#extension GL_ARB_gpu_shader_int64 : require
+#extension GL_ARB_shader_clock : require
+#extension GL_GOOGLE_include_directive : require
+#extension GL_EXT_ray_tracing : require
+
+#include "lib/Heatmap.glsl"
+#include "lib/Random.glsl"
+#include "lib/RayTracingCommons.glsl"
+#include "lib/Camera.glsl"
+#include "lib/UniformBufferObject.glsl"
+#include "lib/Material.glsl"
+#include "lib/Tonemapping.glsl"
+
+#define MIN_BOUNCES 3
+
+layout(binding = AS_BIND, set = 0) uniform accelerationStructureEXT Scene;
+layout(binding = ACC_BIND, set = 1, rgba32f) uniform image2D AccumulationImage;
+layout(binding = STORAGE_BIND, set = 1, rgba8) uniform image2D OutputImage;
+layout(binding = UNIFORM_BIND, set = 0) readonly uniform UniformBufferObjectStruct { UniformBufferObject ubo; };
+
+layout(location = 0) rayPayloadEXT RayPayload Ray;
+
+
+void main()
+{
+    const uint64_t clock = ubo.mapping == HEAT ? clockARB() : 0;
+
+    // Initialise separate random seeds for the pixel and the rays.
+    // - pixel: we want the same random seed for each pixel to get a homogeneous anti-aliasing.
+    // - ray: we want a noisy random seed, different for each pixel.
+    uint pixelRandomSeed = ubo.frame_count;
+    Ray.RandomSeed = InitRandomSeed(InitRandomSeed(gl_LaunchIDEXT.x, gl_LaunchIDEXT.y), uint(clockARB()));
+    RngStateType rngState = initRNG(uvec2(gl_LaunchIDEXT), uvec2(gl_LaunchSizeEXT.xy), uint(pixelRandomSeed));
+//    switch (ubo.debug) {
+//        case 0:
+//            Ray.rngState = initRNG(uvec2(gl_LaunchIDEXT), uvec2(gl_LaunchSizeEXT.xy), uint(clockARB()));
+//            break;
+//        case 1:
+    Ray.rngState = initRNG(uvec2(gl_LaunchIDEXT), uvec2(gl_LaunchSizeEXT.xy), uint(clockARB()));
+//            break;
+//        case 2:
+//            Ray.rngState = initRNG(uvec2(gl_LaunchIDEXT), uvec2(gl_LaunchSizeEXT.xy), uint(ubo.TotalNumberOfSamples));
+//    }
+
+    vec3 radiance = vec3(0);
+//    Ray.instance_id = 0xFFFFFFFF;
+    // Accumulate all the rays for this pixels.
+    for (uint s = 0; s < ubo.NumberOfSamples; ++s)
+    {
+        //if (ubo.NumberOfSamples != ubo.TotalNumberOfSamples) break;
+        vec2 pixel;
+        vec2 pixelCenter = vec2(gl_LaunchIDEXT.xy) + vec2(0.5);
+        if (ubo.antialiasing) {
+            vec2 offset = vec2(rand(rngState), rand(rngState)) - 0.5;
+            pixel = pixelCenter + offset;
+        } else {
+            pixel = pixelCenter;
+        }
+        const vec2 uv = (pixel / gl_LaunchSizeEXT.xy) * 2.0 - 1.0;
+
+        vec2 offset = ubo.Aperture / 2 * RandomInUnitDisk(Ray.RandomSeed);
+        vec4 origin = ubo.ModelViewInverse * vec4(offset, 0, 1);
+        vec4 target = ubo.ProjectionInverse * (vec4(uv.x, uv.y, 1, 1));
+        vec4 direction = ubo.ModelViewInverse * vec4(normalize(target.xyz * ubo.FocusDistance - vec3(offset, 0)), 0);
+        float tFar = tMax;
+        if (ubo.orthographic_fov_dis > 0.)
+         {
+            vec2 new_uv = (1. + ubo.orthographic_fov_dis) * uv;
+            origin = vec4(new_uv.x , -new_uv.y, 0, 1);
+            origin = ubo.ModelViewInverse * origin;
+            direction = vec4(0, 0, -1, 0);
+            direction = ubo.ModelViewInverse * direction;
+            tFar = 10 * tMax;
+        }
+
+
+        vec3 throughput = vec3(1);
+        Ray.t = 0;
+        Ray.volume_dis = -1.;
+        // Ray scatters are handled in this loop. There are no recursive traceRayEXT() calls in other shaders.
+        uint rayFlags = gl_RayFlagsNoneEXT;
+        if (ubo.fully_opaque) {
+            rayFlags |= gl_RayFlagsOpaqueEXT;
+        }
+        for (uint b = 0; b < ubo.NumberOfBounces; b++)
+        {
+
+            traceRayEXT(
+            Scene, rayFlags, 0xff,
+            0 /*sbtRecordOffset*/, 0 /*sbtRecordStride*/, 0 /*missIndex*/,
+            origin.xyz, tMin, direction.xyz, tFar, 0 /*payload*/);
+
+            const vec3 hitColor = Ray.hitValue;
+            const float t = Ray.t;
+            const bool isScattered = Ray.needScatter;
+
+            radiance += throughput * Ray.emittance;
+            Ray.emittance = vec3(0.);
+
+            // Should sample light here
+
+            // No need to do more work if it is the last bounce
+            if (b + 1 == ubo.NumberOfBounces) {
+                break;
+            }
+
+            // Russian roulette
+            if (b > MIN_BOUNCES) {
+                float rrProbability = clamp(luminance(throughput), 0.01, 0.95);
+                float prop = rand(rngState);
+                if (rrProbability < prop) {
+                    break;
+                }
+                else {
+                    throughput /= rrProbability;
+                }
+            }
+
+            throughput *= hitColor;
+            // Trace missed, or end of trace.
+
+            if (!isScattered || t < 0) {
+                break;
+            }
+            // Trace hit.
+            origin = vec4(Ray.hitPoint, 1.);
+            direction = vec4(Ray.scatterDirection, 0);
+        }
+    }
+
+    const bool accumulate = ubo.NumberOfSamples != ubo.TotalNumberOfSamples;
+    const vec3 accumulatedColor = (accumulate ? imageLoad(AccumulationImage, ivec2(gl_LaunchIDEXT.xy)) : vec4(0)).rgb + radiance;
+
+    radiance = accumulatedColor / ubo.TotalNumberOfSamples;
+
+    uint tone_mapping_mode = ubo.tone_mapping_mode;
+    vec3 color;
+    if (tone_mapping_mode == TONE_MAP_MODE_DEFAULT) {
+        color = defaultToneMap(radiance);
+    } else if (tone_mapping_mode == TONE_MAP_MODE_UNCHARTED) {
+        color = toneMapUncharted(radiance);
+    } else if (tone_mapping_mode == TONE_MAP_MODE_HEJL_RICHARD) {
+        color = toneMapHejlRichard(radiance);
+    } else if (tone_mapping_mode == TONE_MAP_MODE_ACES) {
+        color = toneMapACES(radiance);
+    } else {
+        color = LINEARtoSRGB(radiance);
+    }
+
+    switch (ubo.mapping)
+    {
+        case HEAT:
+            const uint64_t deltaTime = clockARB() - clock;
+            const float heatmapScale = 1000000.0f * ubo.HeatmapScale * ubo.HeatmapScale;
+            const float deltaTimeScaled = clamp(float(deltaTime) / heatmapScale, 0.0f, 1.0f);
+            color = heatmap(deltaTimeScaled);
+            break;
+        case DISTANCE:
+            color = vec3(min((ubo.HeatmapScale - max(Ray.t, tMin)) / ubo.HeatmapScale, 1));
+            break;
+        case RENDER:
+            break;
+    }
+    imageStore(AccumulationImage, ivec2(gl_LaunchIDEXT.xy), vec4(accumulatedColor, 0));
+    imageStore(OutputImage, ivec2(gl_LaunchIDEXT.xy), vec4(color, 1.));
+}

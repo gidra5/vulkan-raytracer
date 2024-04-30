@@ -1,9 +1,0 @@
-const float PHI     = 1.61803398874989484820459; // Golden Ratio   
-const float PHI_2   = 1.32471795724474602596090; // Golden Ratio 2
-const float PHI_3   = 1.22074408460575947536168; // Golden Ratio 3
-const float PHI_4   = 1.16730397826141868425604; // Golden Ratio 4
-const float SRT     = 1.41421356237309504880169; // Square Root of Two
-const float PI      = 3.14159265358979323846264;
-const float E       = 2.71828182845904523536028;
-const float TWO_PI  = 6.28318530717958647692528;
-const float INV_PI  = 1 / PI;

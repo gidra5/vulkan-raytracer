@@ -6,20 +6,63 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-quaternion = "*"
-vecmath = "*"
+log = "0.4.17"
+pretty_env_logger = "0.5.0"
 
-# The Vulkan library doesn't provide any functionality to create and handle windows, as
-# this would be out of scope. In order to open a window, we are going to use the `winit` crate.
-winit = "0.27" # the same as in vulkano-util
-# The `vulkano` crate is the main crate that you must use to use Vulkan.
-vulkano = "0.32"
-vulkano-util = "0.32"
-# Provides the `shader!` macro that is used to generate code for using shaders.
-vulkano-shaders = {version = "0.32", features = ["shaderc-build-from-source"]}
-# The `vulkano_win` crate is the link between `vulkano` and `winit`. Vulkano doesn't know about winit,
-# and winit doesn't know about vulkano, so import a crate that will provide a link between the two.
-vulkano-win = "*"
-cgmath = "0.18"
-bytemuck = { version = "1.7", features = ["derive", "extern_crate_std", "min_const_generics"] }
-rand = "0.8.4"
+memoffset = "0.9.1"
+
+rand = "0.8.5"
+mikktspace = "0.3.0"
+glam = { version = "0.27.0", features = ["serde"] }
+nalgebra = "0.32.5"
+quaternion = "*"
+# vecmath = "*"
+
+#egui = "0.21.0"
+#egui-winit = "0.21.1"
+# egui-winit-ash-integration = "0.6.0"
+winit = "0.30"
+ash = { version = "0.38", features = ["linked", "debug"] }
+# cgmath = "0.18"
+# bytemuck = { version = "1.7", features = [
+#   "derive",
+#   "extern_crate_std",
+#   "min_const_generics",
+# ] }
+glsl-to-spirv = "0.1.7"
+image = { version = "0.24.6", default-features = false, features = [
+  "png",
+  "jpeg",
+] }
+gltf = { version = "1.1.0", features = [
+  "names",
+  "extras",
+  "image_jpeg_rayon",
+
+  "KHR_materials_ior",
+  "KHR_materials_pbrSpecularGlossiness",
+  "KHR_materials_transmission",
+  "KHR_materials_variants",
+  "KHR_materials_volume",
+  "KHR_materials_specular",
+  "KHR_texture_transform",
+  "KHR_materials_unlit",
+  "KHR_lights_punctual",
+] }
+
+cfg-if = "1.0.0"
+
+# [workspace.dependencies]
+# anyhow = "1.0.0"
+# gpu-allocator = { version = "0.22", default-features = false, features = [
+#   "vulkan",
+# ] }
+
+# imgui = "0.11.0"
+# imgui-winit-support = "0.11.0"
+# imgui-rs-vulkan-renderer = { version = "1.6", features = [
+#   "gpu-allocator",
+#   "dynamic-rendering",
+# ] }
+
+# thiserror = "1.0"
